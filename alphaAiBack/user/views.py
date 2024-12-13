@@ -7,7 +7,7 @@ from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken
 from .serializers import LoginSerializer, NewUserSerializer
 import httpx
-import asyncio
+
 load_dotenv()
 
 
@@ -51,7 +51,7 @@ def create_new_user(request):
 def user1(request):
     try:
         # Sample client data for user 1
-        client_data = {
+        data = {
             "user_id": 105,
             "margin": "₹20",
             "used_margin": "No data available",
@@ -63,22 +63,6 @@ def user1(request):
             "unfilled_buy_limit_option": "No data available",
             "running_m2m": "No data available"
         }
-
-        # Prepare the data list with both users' information
-        data = [
-            {
-                "user_id": client_data.get("user_id"),
-                "margin": client_data.get("margin", "No data available"),
-                "used_margin": client_data.get("used_margin", "No data available"),
-                "capital": client_data.get("capital", "No data available"),
-                "broker_name": client_data.get("broker_name", "No data available"),
-                "return_percentage": client_data.get("return_percentage", "No data available"),
-                "number_of_orders_pinched": client_data.get("number_of_orders_pinched", "No data available"),
-                "last_order_time": client_data.get("last_order_time", "No data available"),
-                "unfilled_buy_limit_option": client_data.get("unfilled_buy_limit_option", "No data available"),
-                "running_m2m": client_data.get("running_m2m", "No data available"),
-            },
-        ]
 
         # Return the final response with 'status' and 'data' keys
         return Response({
@@ -105,55 +89,61 @@ def user2(request):
             "unfilled_buy_limit_option": "No data available",
             "running_m2m": "No data available"
         }
-        return Response(data, status=status.HTTP_200_OK)
+        return Response({
+            "status": "success",
+            "data": data
+        }, status=status.HTTP_200_OK)
 
     except Exception as e:
         # Return an error response in case of an exception
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-
-
 @api_view(['GET'])
-async def get_all_clients_data(request):
-    """
-    Master API: Fetch data from all endpoints concurrently.
-    """
+def get_all_clients_data(request):
     endpoints = [
         "https://django-backend1.azurewebsites.net/user/user1",
-        "https://django-backend1.azurewebsites.net/user/user2",
+        "https://django-backend1.azurewebsites.net/user/user2"
     ]
 
-    async def fetch_data(client, url):
-        try:
-            response = await client.get(url)
-            response.raise_for_status()
-            return {"data": response.json(), "error": None}
-        except httpx.RequestError as req_err:
-            return {"data": None, "error": f"Request error: {str(req_err)}"}
-        except httpx.HTTPStatusError as http_err:
-            return {"data": None, "error": f"HTTP error: {http_err.response.status_code}"}
-        except ValueError as val_err:
-            return {"data": None, "error": f"Invalid JSON response: {str(val_err)}"}
-        except Exception as e:
-            return {"data": None, "error": str(e)}
-
-    async with httpx.AsyncClient(timeout=60) as client:
-        tasks = [fetch_data(client, url) for url in endpoints]
-        results = await asyncio.gather(*tasks)
-
-    # Process results
     data = []
     errors = []
-    for result in results:
-        if result["data"]:
-            data.append(result["data"])
-        if result["error"]:
-            errors.append(result["error"])
 
-    # Return response
+    try:
+        with httpx.Client(follow_redirects=True, verify=False, timeout=30) as client:
+            for endpoint in endpoints:
+                try:
+                    print(f"Fetching data from: {endpoint}")
+                    response = client.get(endpoint)
+                    response.raise_for_status()
+                    client_data = response.json()
+
+                    # Extract and append 'data' key
+                    data.append(client_data.get("data", {}))
+
+                except httpx.HTTPStatusError as http_err:
+                    print(f"HTTP error for {endpoint}: {str(http_err)}")
+                    errors.append({"endpoint": endpoint, "error": f"HTTP error: {http_err.response.status_code}"})
+                except httpx.RequestError as req_err:
+                    print(f"Request error for {endpoint}: {str(req_err)}")
+                    errors.append({"endpoint": endpoint, "error": "Request failed or timed out"})
+                except ValueError as val_err:
+                    print(f"JSON parsing error for {endpoint}: {str(val_err)}")
+                    errors.append({"endpoint": endpoint, "error": "Invalid JSON response"})
+                except Exception as e:
+                    print(f"Unexpected error for {endpoint}: {str(e)}")
+                    errors.append({"endpoint": endpoint, "error": str(e)})
+
+    except Exception as e:
+        print(f"Critical error: {str(e)}")
+        return Response(
+            {"status": "error", "message": "A critical error occurred while fetching data.", "details": str(e)},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
     if errors:
         return Response(
             {"status": "partial_success", "message": "Some endpoints failed.", "data": data, "errors": errors},
-            status=status.HTTP_207_MULTI_STATUS,
+            status=status.HTTP_207_MULTI_STATUS
         )
+
     return Response({"status": "success", "data": data}, status=status.HTTP_200_OK)
